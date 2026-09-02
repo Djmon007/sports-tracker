@@ -8,12 +8,12 @@
 </head>
 <body class="bg-[#0f172a] text-slate-100 min-h-screen p-6">
 
-  <div class="max-w-6xl mx-auto space-y-6">
+  <div class="max-w-7xl mx-auto space-y-6">
     <!-- Header -->
     <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-800 pb-5">
       <div>
         <h1 class="text-2xl font-bold text-white tracking-tight">MFA Sports Product Monitor</h1>
-        <p class="text-sm text-slate-400">Live 24x7 price tracking & catalog monitoring</p>
+        <p class="text-sm text-slate-400">Live 24x7 price & size-level stock inventory</p>
       </div>
       <div id="lastUpdated" class="text-xs text-slate-500 font-mono">
         Last updated: —
@@ -69,16 +69,23 @@
         <table class="w-full text-left text-sm">
           <thead class="bg-[#1e293b] uppercase text-xs text-slate-400 tracking-wider border-b border-slate-700">
             <tr>
-              <th class="py-3.5 px-5">Product Name</th>
-              <th class="py-3.5 px-5">Current Price</th>
-              <th class="py-3.5 px-5">Original Price</th>
-              <th class="py-3.5 px-5">Discount</th>
-              <th class="py-3.5 px-5 text-center">Action</th>
+              <th class="py-3.5 px-4 min-w-[200px]">Product Name</th>
+              <th class="py-3.5 px-3">Price</th>
+              <th class="py-3.5 px-3">Original</th>
+              <th class="py-3.5 px-3">Discount</th>
+              <!-- Sizes -->
+              <th class="py-3.5 px-2 text-center">S</th>
+              <th class="py-3.5 px-2 text-center">M</th>
+              <th class="py-3.5 px-2 text-center">L</th>
+              <th class="py-3.5 px-2 text-center">XL</th>
+              <th class="py-3.5 px-2 text-center">XXL</th>
+              <th class="py-3.5 px-2 text-center">3XL</th>
+              <th class="py-3.5 px-4 text-center">Action</th>
             </tr>
           </thead>
           <tbody id="tableBody" class="divide-y divide-slate-800">
             <tr>
-              <td colspan="5" class="py-8 text-center text-slate-400">Fetching latest products...</td>
+              <td colspan="11" class="py-8 text-center text-slate-400">Fetching latest products and size stock...</td>
             </tr>
           </tbody>
         </table>
@@ -88,6 +95,7 @@
 
   <script>
     let products = [];
+    const SIZES = ["S", "M", "L", "XL", "XXL", "3XL"];
 
     async function loadData() {
       try {
@@ -95,7 +103,6 @@
         if (!response.ok) throw new Error('Could not fetch products.json');
         const data = await response.json();
 
-        // Handle both previous list format and new metadata payload format
         if (Array.isArray(data)) {
           products = data;
           document.getElementById('totalCount').innerText = data.length;
@@ -113,11 +120,21 @@
       } catch (err) {
         document.getElementById('tableBody').innerHTML = `
           <tr>
-            <td colspan="5" class="py-8 text-center text-rose-400">
+            <td colspan="11" class="py-8 text-center text-rose-400">
               Failed to load product data. Check if <code>data/products.json</code> exists.
             </td>
           </tr>
         `;
+      }
+    }
+
+    function renderStockBadge(count) {
+      if (count === undefined || count === null) return `<span class="text-slate-500">—</span>`;
+      const num = Number(count);
+      if (num > 0) {
+        return `<span class="text-emerald-400 font-bold">${num}</span>`;
+      } else {
+        return `<span class="text-rose-500 font-bold">0</span>`;
       }
     }
 
@@ -126,7 +143,7 @@
       if (!items.length) {
         tbody.innerHTML = `
           <tr>
-            <td colspan="5" class="py-8 text-center text-slate-400">No matching items found.</td>
+            <td colspan="11" class="py-8 text-center text-slate-400">No matching items found.</td>
           </tr>
         `;
         return;
@@ -136,24 +153,30 @@
         const curr = item.current_price ? `₹${item.current_price}` : '—';
         const orig = item.original_price ? `<span class="line-through text-slate-400">₹${item.original_price}</span>` : '—';
         const offBadge = item.off 
-          ? `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded text-xs font-semibold">${item.off}</span>`
+          ? `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded text-xs font-semibold">${item.off}</span>`
           : '—';
         
         const newBadge = item.is_new 
-          ? `<span class="ml-2 bg-blue-500/20 text-blue-400 border border-blue-500/30 px-2 py-0.5 rounded text-xs uppercase tracking-wider font-bold">NEW</span>`
+          ? `<span class="ml-2 bg-blue-500/20 text-blue-400 border border-blue-500/30 px-1.5 py-0.5 rounded text-[10px] uppercase font-bold tracking-wider">NEW</span>`
           : '';
+
+        const sizeCols = SIZES.map(s => {
+          const count = item.sizes ? item.sizes[s] : 0;
+          return `<td class="py-3.5 px-2 text-center">${renderStockBadge(count)}</td>`;
+        }).join('');
 
         return `
           <tr class="hover:bg-slate-800/50 transition">
-            <td class="py-4 px-5 font-semibold text-white tracking-wide">
+            <td class="py-3.5 px-4 font-semibold text-white">
               ${item.title}${newBadge}
             </td>
-            <td class="py-4 px-5 text-emerald-400 font-bold text-base">${curr}</td>
-            <td class="py-4 px-5">${orig}</td>
-            <td class="py-4 px-5">${offBadge}</td>
-            <td class="py-4 px-5 text-center">
+            <td class="py-3.5 px-3 text-emerald-400 font-bold text-sm">${curr}</td>
+            <td class="py-3.5 px-3">${orig}</td>
+            <td class="py-3.5 px-3">${offBadge}</td>
+            ${sizeCols}
+            <td class="py-3.5 px-4 text-center">
               <a href="${item.url}" target="_blank" rel="noopener noreferrer" 
-                 class="inline-block bg-blue-600 hover:bg-blue-500 text-white px-4 py-1.5 rounded text-xs font-medium transition shadow">
+                 class="inline-block bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded text-xs font-medium transition shadow">
                 View
               </a>
             </td>
