@@ -4,6 +4,8 @@ import re
 import time
 from urllib.parse import urljoin
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 import requests
 from bs4 import BeautifulSoup
 
@@ -18,8 +20,11 @@ HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
 }
 
-# Standard size list including 3XL / XXXL
 STANDARD_SIZES = ["S", "M", "L", "XL", "XXL", "3XL"]
+OUTPUT_PATH = "data/products.json"
+
+# Thread-safe file writing lock
+file_lock = threading.Lock()
 
 
 def clean_text(text: str) -> str:
@@ -27,18 +32,34 @@ def clean_text(text: str) -> str:
 
 
 def normalize_size(size_str: str) -> str:
-    """Normalizes variations like XXXL to 3XL."""
     s = size_str.upper().strip()
-    if s in ["XXXL", "3XL"]:
-        return "3XL"
-    return s
+    return "3XL" if s in ["XXXL", "3XL"] else s
+
+
+def save_snapshot(items_dict: dict, previous_urls: set, is_final: bool = False):
+    """Thread-safe flush to products.json."""
+    items = list(items_dict.values())
+    new_items_count = sum(1 for item in items if previous_urls and item.get("is_new"))
+
+    payload = {
+        "metadata": {
+            "total_products": len(items),
+            "new_products_last_hour": new_items_count,
+            "status": "completed" if is_final else "scraping_in_progress",
+            "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        },
+        "products": items
+    }
+
+    with file_lock:
+        with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
 
 
 def parse_sizes_and_stock(product_url: str, session: requests.Session) -> dict:
     size_stock = {size: 0 for size in STANDARD_SIZES}
-
     try:
-        res = session.get(product_url, headers=HEADERS, timeout=15)
+        res = session.get(product_url, headers=HEADERS, timeout=12)
         if res.status_code != 200:
             return size_stock
         page_html = res.text
@@ -46,10 +67,10 @@ def parse_sizes_and_stock(product_url: str, session: requests.Session) -> dict:
     except Exception:
         return size_stock
 
-    # Method A: Variant JSON matches inside scripts
+    # Variant JSON Regex Check
     variant_matches = re.findall(
-        r'\{[^{}]*(?:size|attribute)[^{}]*(?:stock|qty|quantity)[^{}]*\}', 
-        page_html, 
+        r'\{[^{}]*(?:size|attribute)[^{}]*(?:stock|qty|quantity)[^{}]*\}',
+        page_html,
         re.I
     )
     for v_str in variant_matches:
@@ -61,7 +82,7 @@ def parse_sizes_and_stock(product_url: str, session: requests.Session) -> dict:
                     if stock_match:
                         size_stock[size] = int(stock_match.group(1))
 
-    # Method B: Parse DOM size buttons/selectors
+    # DOM Fallback
     valid_size_tokens = set(STANDARD_SIZES) | {"XXXL"}
     size_elements = soup.find_all(
         lambda tag: tag.name in ["button", "div", "li", "span", "input", "a"]
@@ -74,19 +95,16 @@ def parse_sizes_and_stock(product_url: str, session: requests.Session) -> dict:
         if size not in STANDARD_SIZES:
             continue
 
-        # Check data attributes
         stock_val = el.get("data-stock") or el.get("data-qty") or el.get("data-quantity")
         if stock_val is not None and stock_val.isdigit():
             size_stock[size] = int(stock_val)
             continue
 
-        # Check classes for out-of-stock indicators
         el_classes = " ".join(el.get("class", [])).lower()
         if any(w in el_classes for w in ["disabled", "out-of-stock", "outofstock", "sold-out", "soldout"]):
             size_stock[size] = 0
             continue
 
-        # Check surrounding text for stock count
         parent_block = el.find_parent(["div", "section", "form"]) or el.parent
         parent_text = clean_text(parent_block.get_text(separator=" "))
         
@@ -120,11 +138,9 @@ def parse_card(view_link_elem):
         s for s in raw_strings 
         if not re.search(r"^(view product|add to cart|buy now|wishlist)$", s, re.I)
     ]
-
     if not filtered_strings:
         return None
 
-    # Title
     title = ""
     candidate_titles = [
         s for s in filtered_strings 
@@ -132,22 +148,17 @@ def parse_card(view_link_elem):
     ]
     if candidate_titles:
         title = max(candidate_titles, key=len)
-
     if not title:
         return None
 
-    # Discount
     full_card_text = clean_text(container.get_text(separator=" "))
     off_match = re.search(r"\(?\s*(\d+%\s*Off)\s*\)?", full_card_text, re.I)
     discount_off = f"({off_match.group(1).strip()})" if off_match else None
 
-    # Price Area
     price_area = full_card_text.replace(title, "")
     price_area = re.sub(r"(?i)\bview product\b", "", price_area)
 
-    current_price = None
-    original_price = None
-
+    current_price, original_price = None, None
     dual_price_match = re.search(
         r"(?:₹|Rs\.?)?\s*(\d{2,5})\s+(?:₹|Rs\.?)?\s*(\d{2,5})\s*\(?\s*\d+%\s*Off\)?",
         price_area,
@@ -170,15 +181,13 @@ def parse_card(view_link_elem):
             if n not in ["2021", "2022", "2024", "2025", "2026", "2027"]
             and not re.search(r"\b" + n + r"%", price_area)
         ]
-
         if valid_nums:
             current_price = valid_nums[0]
             if len(valid_nums) > 1 and not original_price:
                 original_price = valid_nums[1]
 
     if current_price and original_price:
-        c_val = int(current_price)
-        o_val = int(original_price)
+        c_val, o_val = int(current_price), int(original_price)
         if c_val > o_val:
             current_price, original_price = str(o_val), str(c_val)
 
@@ -206,25 +215,31 @@ def get_total_pages(soup: BeautifulSoup) -> int:
     return max(page_numbers) if page_numbers else 1
 
 
-def scrape_all():
+def process_item_detail(product: dict, previous_urls: set):
+    """Worker task executed in parallel threads."""
     session = requests.Session()
-    items = []
+    product["sizes"] = parse_sizes_and_stock(product["url"], session)
+    product["is_new"] = bool(previous_urls and product["url"] not in previous_urls)
+    return product
+
+
+def run_parallel_crawler():
+    session = requests.Session()
+    discovered_cards = {}
     page = 1
     total_pages = None
 
+    # Step 1: Rapid Catalog Discovery
+    print("Collecting catalog product links...")
     while True:
         url = f"{BASE_URL}?page={page}" if page > 1 else BASE_URL
-        print(f"Fetching catalog page {page}{f' of {total_pages}' if total_pages else ''}")
-
         try:
-            res = session.get(url, headers=HEADERS, timeout=20)
+            res = session.get(url, headers=HEADERS, timeout=15)
             res.raise_for_status()
-        except requests.RequestException as exc:
-            print(f"Catalog fetch failed at page {page}: {exc}")
+        except requests.RequestException:
             break
 
         soup = BeautifulSoup(res.text, "html.parser")
-
         if total_pages is None:
             total_pages = get_total_pages(soup)
 
@@ -232,62 +247,56 @@ def scrape_all():
             a for a in soup.find_all("a") 
             if "view product" in a.get_text().lower() and a.get("href")
         ]
-
         if not view_links:
             break
 
         for link in view_links:
-            product = parse_card(link)
-            if product:
-                print(f"Scraping sizes for: {product['title'][:30]}...")
-                sizes = parse_sizes_and_stock(product["url"], session)
-                product["sizes"] = sizes
-                items.append(product)
-                time.sleep(0.2)
+            card = parse_card(link)
+            if card and card["url"] not in discovered_cards:
+                discovered_cards[card["url"]] = card
 
         if total_pages and page >= total_pages:
             break
-
         page += 1
-        time.sleep(0.8)
 
-    return list({item["url"]: item for item in items if item.get("url")}.values())
+    print(f"Discovered {len(discovered_cards)} items. Scraping sizes simultaneously...")
 
-
-if __name__ == "__main__":
-    os.makedirs("data", exist_ok=True)
-    output_path = "data/products.json"
-
+    # Load existing URLs to detect items added in the last hour
     previous_urls = set()
-    if os.path.exists(output_path):
+    if os.path.exists(OUTPUT_PATH):
         try:
-            with open(output_path, "r", encoding="utf-8") as f:
+            with open(OUTPUT_PATH, "r", encoding="utf-8") as f:
                 old_data = json.load(f)
                 old_items = old_data.get("products", []) if isinstance(old_data, dict) else old_data
                 previous_urls = {item["url"] for item in old_items if "url" in item}
         except Exception:
-            previous_urls = set()
+            pass
 
-    all_products = scrape_all()
+    completed_products = {}
+    counter = 0
 
-    new_items_count = 0
-    for item in all_products:
-        if previous_urls and item["url"] not in previous_urls:
-            item["is_new"] = True
-            new_items_count += 1
-        else:
-            item["is_new"] = False
+    # Step 2: Concurrently scrape size stock using 16 worker threads
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        futures = {
+            executor.submit(process_item_detail, prod, previous_urls): prod["url"]
+            for prod in discovered_cards.values()
+        }
 
-    payload = {
-        "metadata": {
-            "total_products": len(all_products),
-            "new_products_last_hour": new_items_count,
-            "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-        },
-        "products": all_products
-    }
+        for future in as_completed(futures):
+            prod = future.result()
+            completed_products[prod["url"]] = prod
+            counter += 1
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, ensure_ascii=False)
+            # Flush to file every 20 completed items so monitor updates immediately
+            if counter % 20 == 0:
+                print(f"Progress: {counter}/{len(discovered_cards)} products scraped.")
+                save_snapshot(completed_products, previous_urls, is_final=False)
 
-    print(f"Finished! Processed {len(all_products)} products with sizes.")
+    # Final completed flush
+    save_snapshot(completed_products, previous_urls, is_final=True)
+    print("Scraping finished successfully!")
+
+
+if __name__ == "__main__":
+    os.makedirs("data", exist_ok=True)
+    run_parallel_crawler()
