@@ -22,90 +22,84 @@ def clean_text(text: str) -> str:
 
 
 def parse_product_card(card):
-    """
-    Extracts title, prices, discount, and URL accurately from an MFA product card.
-    """
-    # 1. Target URL
-    # Look for View Product anchor or a direct product link
-    link_elem = card.find("a", href=re.compile(r"/Products?/|/Product-detail/", re.I))
-    if not link_elem and card.name == "a":
-        link_elem = card
+    # 1. Product Link
+    link_tag = card.find("a", href=re.compile(r"/Products?/|/Product-detail/", re.I))
+    if not link_tag and card.name == "a":
+        link_tag = card
 
-    if not link_elem or not link_elem.get("href"):
+    if not link_tag or not link_tag.get("href"):
         return None
 
-    raw_href = link_elem.get("href", "")
-    if raw_href.startswith("#") or "javascript:" in raw_href:
+    href = link_tag.get("href", "")
+    if href.startswith("#") or "javascript:" in href:
         return None
-    product_url = urljoin(BASE_URL, raw_href)
+    product_url = urljoin(BASE_URL, href)
 
-    # 2. Target Title
-    # Product title is usually in an h3, h4, h5, or a link containing product text (not "View Product")
+    # 2. Extract Discount (e.g. "(31% Off)")
+    full_text = card.get_text(separator=" ")
+    off_match = re.search(r"\(\s*(\d+%\s*Off)\s*\)", full_text, re.I)
+    if not off_match:
+        off_match = re.search(r"(\d+%\s*Off)", full_text, re.I)
+    discount_off = f"({off_match.group(1)})" if off_match else None
+
+    # 3. Extract Original Price (strikethrough / del tag)
+    original_price = None
+    del_tag = card.find(["del", "s", "strike"]) or card.find(
+        attrs={"style": re.compile(r"text-decoration:\s*line-through", re.I)}
+    )
+    if del_tag:
+        match = re.search(r"(\d+)", del_tag.get_text())
+        if match:
+            original_price = match.group(1)
+
+    # 4. Extract Title
     title = ""
-    title_elem = card.find(["h3", "h4", "h5", "h6"])
+    # Check for dedicated header or anchor with the product name
+    title_elem = card.find(["h2", "h3", "h4", "h5", "h6"])
     if not title_elem:
         for a in card.find_all("a"):
-            text = clean_text(a.get_text())
-            if text and "view product" not in text.lower():
+            txt = clean_text(a.get_text())
+            if txt and "view product" not in txt.lower():
                 title_elem = a
                 break
 
     if title_elem:
         title = clean_text(title_elem.get_text())
     else:
-        # Fallback: inspect raw text before price elements
-        card_clone = BeautifulSoup(str(card), "html.parser")
-        for tag in card_clone.find_all(["del", "s", "strike", "a"]):
-            if "view product" in tag.get_text().lower():
-                tag.decompose()
-        title = clean_text(card_clone.get_text())
+        # Fallback: extract card lines and take the line preceding prices
+        lines = [clean_text(line) for line in card.stripped_strings]
+        for line in lines:
+            if "view product" in line.lower():
+                continue
+            if re.search(r"[A-Za-z]{3,}", line) and not re.search(r"^\s*₹?\s*\d+\s*$", line):
+                title = line
+                break
 
-    # Ensure unwanted UI keywords don't slip into title
+    # Clean UI artefacts from title
     title = re.sub(r"(?i)\bview product\b", "", title).strip()
 
-    # 3. Original Price (Strikethrough: <del>, <s>, <strike>, or CSS line-through)
-    original_price = None
-    del_tag = card.find(["del", "s", "strike"]) or card.find(
-        attrs={"style": re.compile(r"text-decoration:\s*line-through", re.I)}
-    )
-    if del_tag:
-        del_match = re.search(r"(\d+)", del_tag.get_text())
-        if del_match:
-            original_price = del_match.group(1)
-
-    # 4. Discount / Off Percentage (e.g., "(31% Off)")
-    off_match = re.search(r"(\d+%\s*Off)", card.get_text(), re.I)
-    off_text = off_match.group(1) if off_match else None
-
-    # 5. Current Price
-    # Find all standalone numbers in the price area (avoiding year numbers in title)
+    # 5. Extract Current Price (targeted to the price element with ₹)
     current_price = None
-    # Extract only the text outside of the title container
-    price_search_area = card.get_text(separator=" ")
-    if title:
-        price_search_area = price_search_area.replace(title, "")
-
-    # Look for Indian Rupee symbol or price values adjacent to discount/del
-    price_candidates = re.findall(r"(?:₹|\bRs\.?|\bINR)?\s*(\d{2,5})\b", price_search_area)
     
-    # Filter out values that match the original strikethrough price or 2026/2027 years
-    valid_prices = [
-        p for p in price_candidates 
-        if p != original_price and p not in ["2026", "2027", "2025", "2024"]
-    ]
-    
-    if valid_prices:
-        current_price = valid_prices[0]
+    # Priority: find price prefixed with ₹ or Rs
+    rupee_match = re.search(r"(?:₹|Rs\.?)\s*(\d{2,5})", full_text)
+    if rupee_match:
+        current_price = rupee_match.group(1)
+    else:
+        # Find numeric sequence directly before original_price or discount
+        price_block_match = re.search(r"(\d{2,5})\s+(?:\d{2,5}\s+)?\(\d+%\s*Off\)", full_text)
+        if price_block_match:
+            current_price = price_block_match.group(1)
 
-    # Clean up empty or corrupted titles
-    if not title or title.lower() == "view product":
+    # Validation: Title and price must be valid
+    if not title or title.isdigit() or len(title) < 3:
         return None
 
     return {
         "title": title,
         "current_price": current_price,
         "original_price": original_price,
-        "off": off_text,
+        "off": discount_off,
         "url": product_url,
     }
 
@@ -126,28 +120,24 @@ def scrape_products(max_pages: int = 5):
 
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # Select individual product card wrappers
-        # MFA Sports uses bootstrap columns or product grid wrappers
+        # Get parent product containers
         cards = soup.find_all("div", class_=re.compile(r"product|col-|card|item", re.I))
-        
-        # Deduplicate parent containers
         candidate_cards = [
             c for c in cards 
             if "view product" in c.get_text().lower() 
             and len(c.find_all(text=re.compile(r"view product", re.I))) == 1
         ]
 
-        found_on_page = 0
+        found = 0
         for card in candidate_cards:
             parsed = parse_product_card(card)
             if parsed:
                 items.append(parsed)
-                found_on_page += 1
+                found += 1
 
-        print(f"Extracted {found_on_page} products from page {page}")
+        print(f"Extracted {found} products from page {page}")
         time.sleep(1.5)
 
-    # Deduplicate entries by URL
     unique_items = {item["url"]: item for item in items if item.get("url")}.values()
     return list(unique_items)
 
@@ -160,4 +150,4 @@ if __name__ == "__main__":
     with open(output_file, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
-    print(f"Successfully saved {len(results)} items to {output_file}")
+    print(f"Saved {len(results)} items to {output_file}")
