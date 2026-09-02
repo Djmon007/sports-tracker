@@ -1,233 +1,302 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sports Tracker Dashboard</title>
-  <script src="https://cdn.tailwindcss.com"></script>
-</head>
-<body class="bg-[#0f172a] text-slate-100 min-h-screen p-6">
+import json
+import os
+import re
+import time
+from urllib.parse import urljoin
+from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
+import requests
+from bs4 import BeautifulSoup
 
-  <div class="max-w-7xl mx-auto space-y-6">
-    <!-- Header -->
-    <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-800 pb-5">
-      <div>
-        <h1 class="text-2xl font-bold text-white tracking-tight">MFA Sports Product Monitor</h1>
-        <p class="text-sm text-slate-400">Live price tracking & size-level stock inventory</p>
-      </div>
-      <div id="lastUpdated" class="text-xs text-slate-500 font-mono">
-        Last updated: —
-      </div>
-    </header>
+BASE_URL = "https://www.mfasportsmahe.com/Products"
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
 
-    <!-- Top KPI Cards -->
-    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      <div class="bg-[#1e293b]/70 border border-slate-700/80 rounded-xl p-5 shadow-lg flex items-center justify-between">
-        <div>
-          <p class="text-xs uppercase tracking-wider text-slate-400 font-medium">Number of products</p>
-          <h2 id="totalCount" class="text-3xl font-extrabold text-white mt-1">—</h2>
-        </div>
-        <div class="p-3 bg-blue-500/10 text-blue-400 rounded-lg">
-          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/></svg>
-        </div>
-      </div>
+STANDARD_SIZES = ["S", "M", "L", "XL", "XXL", "3XL"]
+OUTPUT_PATH = "data/products.json"
 
-      <div class="bg-[#1e293b]/70 border border-slate-700/80 rounded-xl p-5 shadow-lg flex items-center justify-between">
-        <div>
-          <p class="text-xs uppercase tracking-wider text-slate-400 font-medium">Newly added products in 1 hour</p>
-          <h2 id="newCount" class="text-3xl font-extrabold text-emerald-400 mt-1">—</h2>
-        </div>
-        <div class="p-3 bg-emerald-500/10 text-emerald-400 rounded-lg">
-          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
-        </div>
-      </div>
-    </div>
+# Thread-safe file writing lock
+file_lock = threading.Lock()
 
-    <!-- Filter & Size Bar -->
-    <div class="space-y-3">
-      <div class="flex flex-col sm:flex-row gap-3">
-        <input
-          type="text"
-          id="searchInput"
-          placeholder="Search jerseys, clubs, editions..."
-          class="flex-1 px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-        />
-        <select
-          id="sortSelect"
-          class="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-        >
-          <option value="default">Sort By: Default</option>
-          <option value="newest">Newly Added First</option>
-          <option value="price-asc">Price: Low to High</option>
-          <option value="price-desc">Price: High to Low</option>
-          <option value="discount-desc">Highest Discount</option>
-        </select>
-      </div>
 
-      <div class="flex items-center gap-2 flex-wrap text-xs">
-        <span class="text-slate-400 font-medium mr-1">Find In-Stock Size:</span>
-        <button onclick="filterBySize('ALL')" class="size-btn px-3 py-1 rounded bg-blue-600 text-white font-semibold">ALL</button>
-        <button onclick="filterBySize('S')" class="size-btn px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300">S</button>
-        <button onclick="filterBySize('M')" class="size-btn px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300">M</button>
-        <button onclick="filterBySize('L')" class="size-btn px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300">L</button>
-        <button onclick="filterBySize('XL')" class="size-btn px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300">XL</button>
-        <button onclick="filterBySize('XXL')" class="size-btn px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300">XXL</button>
-        <button onclick="filterBySize('3XL')" class="size-btn px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300">3XL</button>
-      </div>
-    </div>
+def clean_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip() if text else ""
 
-    <!-- Table -->
-    <div class="bg-[#1e293b]/60 border border-slate-700 rounded-xl overflow-hidden shadow-2xl backdrop-blur">
-      <div class="overflow-x-auto">
-        <table class="w-full text-left text-sm">
-          <thead class="bg-[#1e293b] uppercase text-xs text-slate-400 tracking-wider border-b border-slate-700">
-            <tr>
-              <th class="py-3.5 px-4 min-w-[220px]">Product Name</th>
-              <th class="py-3.5 px-3">Price</th>
-              <th class="py-3.5 px-3">Original</th>
-              <th class="py-3.5 px-3">Discount</th>
-              <th class="py-3.5 px-2 text-center">S</th>
-              <th class="py-3.5 px-2 text-center">M</th>
-              <th class="py-3.5 px-2 text-center">L</th>
-              <th class="py-3.5 px-2 text-center">XL</th>
-              <th class="py-3.5 px-2 text-center">XXL</th>
-              <th class="py-3.5 px-2 text-center">3XL</th>
-              <th class="py-3.5 px-4 text-center">Action</th>
-            </tr>
-          </thead>
-          <tbody id="tableBody" class="divide-y divide-slate-800">
-            <tr>
-              <td colspan="11" class="py-8 text-center text-slate-400">Loading catalog data...</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
 
-  <script>
-    let products = [];
-    let activeSizeFilter = 'ALL';
-    const SIZES = ["S", "M", "L", "XL", "XXL", "3XL"];
+def normalize_size(size_str: str) -> str:
+    s = size_str.upper().strip()
+    return "3XL" if s in ["XXXL", "3XL"] else s
 
-    async function loadData() {
-      try {
-        const res = await fetch('./data/products.json?t=' + Date.now());
-        if (!res.ok) throw new Error("Could not load products.json");
-        const data = await res.json();
 
-        products = data.products || (Array.isArray(data) ? data : []);
-        document.getElementById('totalCount').innerText = data.metadata?.total_products ?? products.length;
-        document.getElementById('newCount').innerText = data.metadata?.new_products_last_hour ?? '0';
-        if (data.metadata?.last_updated) {
-          document.getElementById('lastUpdated').innerText = `Last updated: ${data.metadata.last_updated}`;
+def save_snapshot(items_dict: dict, previous_urls: set, is_final: bool = False):
+    """Thread-safe flush to products.json."""
+    items = list(items_dict.values())
+    new_items_count = sum(1 for item in items if previous_urls and item.get("is_new"))
+
+    payload = {
+        "metadata": {
+            "total_products": len(items),
+            "new_products_last_hour": new_items_count,
+            "status": "completed" if is_final else "scraping_in_progress",
+            "last_updated": datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        },
+        "products": items
+    }
+
+    with file_lock:
+        with open(OUTPUT_PATH, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2, ensure_ascii=False)
+
+
+def parse_sizes_and_stock(product_url: str, session: requests.Session) -> dict:
+    size_stock = {size: 0 for size in STANDARD_SIZES}
+    try:
+        res = session.get(product_url, headers=HEADERS, timeout=12)
+        if res.status_code != 200:
+            return size_stock
+        page_html = res.text
+        soup = BeautifulSoup(page_html, "html.parser")
+    except Exception:
+        return size_stock
+
+    # Variant JSON Regex Check
+    variant_matches = re.findall(
+        r'\{[^{}]*(?:size|attribute)[^{}]*(?:stock|qty|quantity)[^{}]*\}',
+        page_html,
+        re.I
+    )
+    for v_str in variant_matches:
+        for size in STANDARD_SIZES:
+            target_sizes = [size, "XXXL"] if size == "3XL" else [size]
+            for ts in target_sizes:
+                if re.search(rf'["\']?size["\']?\s*:\s*["\']?{ts}["\']?', v_str, re.I):
+                    stock_match = re.search(r'["\']?(?:stock|qty|quantity)["\']?\s*:\s*(\d+)', v_str, re.I)
+                    if stock_match:
+                        size_stock[size] = int(stock_match.group(1))
+
+    # DOM Fallback
+    valid_size_tokens = set(STANDARD_SIZES) | {"XXXL"}
+    size_elements = soup.find_all(
+        lambda tag: tag.name in ["button", "div", "li", "span", "input", "a"]
+        and tag.get_text(strip=True).upper() in valid_size_tokens
+    )
+
+    for el in size_elements:
+        raw_size = el.get_text(strip=True)
+        size = normalize_size(raw_size)
+        if size not in STANDARD_SIZES:
+            continue
+
+        stock_val = el.get("data-stock") or el.get("data-qty") or el.get("data-quantity")
+        if stock_val is not None and stock_val.isdigit():
+            size_stock[size] = int(stock_val)
+            continue
+
+        el_classes = " ".join(el.get("class", [])).lower()
+        if any(w in el_classes for w in ["disabled", "out-of-stock", "outofstock", "sold-out", "soldout"]):
+            size_stock[size] = 0
+            continue
+
+        parent_block = el.find_parent(["div", "section", "form"]) or el.parent
+        parent_text = clean_text(parent_block.get_text(separator=" "))
+        
+        stock_text_match = re.search(r"(\d+)\s+(?:in stock|left|available)", parent_text, re.I)
+        if stock_text_match:
+            size_stock[size] = int(stock_text_match.group(1))
+        elif re.search(r"out\s+of\s+stock", parent_text, re.I):
+            size_stock[size] = 0
+        else:
+            if size_stock[size] == 0 and "active" in el_classes:
+                size_stock[size] = 1
+
+    return size_stock
+
+
+def parse_card(view_link_elem):
+    href = view_link_elem.get("href", "")
+    if not href or href.startswith("#") or "javascript:" in href:
+        return None
+    product_url = urljoin(BASE_URL, href)
+
+    container = view_link_elem
+    for _ in range(4):
+        if container.parent and container.parent.name not in ["body", "html", "section"]:
+            container = container.parent
+        else:
+            break
+
+    raw_strings = [clean_text(s) for s in container.stripped_strings if clean_text(s)]
+    filtered_strings = [
+        s for s in raw_strings 
+        if not re.search(r"^(view product|add to cart|buy now|wishlist)$", s, re.I)
+    ]
+    if not filtered_strings:
+        return None
+
+    title = ""
+    candidate_titles = [
+        s for s in filtered_strings 
+        if re.search(r"[a-zA-Z]{3,}", s) and not re.search(r"^\(?\d+%\s*Off\)?$", s, re.I)
+    ]
+    if candidate_titles:
+        title = max(candidate_titles, key=len)
+    if not title:
+        return None
+
+    full_card_text = clean_text(container.get_text(separator=" "))
+    off_match = re.search(r"\(?\s*(\d+%\s*Off)\s*\)?", full_card_text, re.I)
+    discount_off = f"({off_match.group(1).strip()})" if off_match else None
+
+    price_area = full_card_text.replace(title, "")
+    price_area = re.sub(r"(?i)\bview product\b", "", price_area)
+
+    current_price, original_price = None, None
+    dual_price_match = re.search(
+        r"(?:₹|Rs\.?)?\s*(\d{2,5})\s+(?:₹|Rs\.?)?\s*(\d{2,5})\s*\(?\s*\d+%\s*Off\)?",
+        price_area,
+        re.I
+    )
+
+    if dual_price_match:
+        current_price = dual_price_match.group(1)
+        original_price = dual_price_match.group(2)
+    else:
+        del_tag = container.find(["del", "s", "strike"])
+        if del_tag:
+            m = re.search(r"(\d{2,5})", del_tag.get_text())
+            if m:
+                original_price = m.group(1)
+
+        remaining_numbers = re.findall(r"(?:₹|Rs\.?)?\s*(\d{2,5})\b", price_area)
+        valid_nums = [
+            n for n in remaining_numbers 
+            if n not in ["2021", "2022", "2024", "2025", "2026", "2027"]
+            and not re.search(r"\b" + n + r"%", price_area)
+        ]
+        if valid_nums:
+            current_price = valid_nums[0]
+            if len(valid_nums) > 1 and not original_price:
+                original_price = valid_nums[1]
+
+    if current_price and original_price:
+        c_val, o_val = int(current_price), int(original_price)
+        if c_val > o_val:
+            current_price, original_price = str(o_val), str(c_val)
+
+    return {
+        "title": title,
+        "current_price": current_price,
+        "original_price": original_price,
+        "off": discount_off,
+        "url": product_url
+    }
+
+
+def get_total_pages(soup: BeautifulSoup) -> int:
+    page_numbers = []
+    for a in soup.find_all("a", href=re.compile(r"page=\d+")):
+        m = re.search(r"page=(\d+)", a.get("href", ""))
+        if m:
+            page_numbers.append(int(m.group(1)))
+
+    for tag in soup.find_all(["a", "span", "li"]):
+        txt = tag.get_text().strip()
+        if txt.isdigit() and int(txt) < 300:
+            page_numbers.append(int(txt))
+
+    return max(page_numbers) if page_numbers else 1
+
+
+def process_item_detail(product: dict, previous_urls: set):
+    """Worker task executed in parallel threads."""
+    session = requests.Session()
+    product["sizes"] = parse_sizes_and_stock(product["url"], session)
+    product["is_new"] = bool(previous_urls and product["url"] not in previous_urls)
+    return product
+
+
+def run_parallel_crawler():
+    session = requests.Session()
+    discovered_cards = {}
+    page = 1
+    total_pages = None
+
+    # Step 1: Rapid Catalog Discovery
+    print("Collecting catalog product links...")
+    while True:
+        url = f"{BASE_URL}?page={page}" if page > 1 else BASE_URL
+        try:
+            res = session.get(url, headers=HEADERS, timeout=15)
+            res.raise_for_status()
+        except requests.RequestException:
+            break
+
+        soup = BeautifulSoup(res.text, "html.parser")
+        if total_pages is None:
+            total_pages = get_total_pages(soup)
+
+        view_links = [
+            a for a in soup.find_all("a") 
+            if "view product" in a.get_text().lower() and a.get("href")
+        ]
+        if not view_links:
+            break
+
+        for link in view_links:
+            card = parse_card(link)
+            if card and card["url"] not in discovered_cards:
+                discovered_cards[card["url"]] = card
+
+        if total_pages and page >= total_pages:
+            break
+        page += 1
+
+    print(f"Discovered {len(discovered_cards)} items. Scraping sizes simultaneously...")
+
+    # Load existing URLs to detect items added in the last hour
+    previous_urls = set()
+    if os.path.exists(OUTPUT_PATH):
+        try:
+            with open(OUTPUT_PATH, "r", encoding="utf-8") as f:
+                old_data = json.load(f)
+                old_items = old_data.get("products", []) if isinstance(old_data, dict) else old_data
+                previous_urls = {item["url"] for item in old_items if "url" in item}
+        except Exception:
+            pass
+
+    completed_products = {}
+    counter = 0
+
+    # Step 2: Concurrently scrape size stock using 16 worker threads
+    with ThreadPoolExecutor(max_workers=16) as executor:
+        futures = {
+            executor.submit(process_item_detail, prod, previous_urls): prod["url"]
+            for prod in discovered_cards.values()
         }
 
-        applyFilters();
-      } catch (err) {
-        document.getElementById('tableBody').innerHTML = `
-          <tr><td colspan="11" class="py-8 text-center text-rose-400">Failed to load data. Waiting for next hourly sync.</td></tr>
-        `;
-      }
-    }
+        for future in as_completed(futures):
+            prod = future.result()
+            completed_products[prod["url"]] = prod
+            counter += 1
 
-    function filterBySize(size) {
-      activeSizeFilter = size;
-      document.querySelectorAll('.size-btn').forEach(btn => {
-        if (btn.innerText === size) {
-          btn.className = "size-btn px-3 py-1 rounded bg-blue-600 text-white font-semibold";
-        } else {
-          btn.className = "size-btn px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300";
-        }
-      });
-      applyFilters();
-    }
+            # Flush to file every 20 completed items so monitor updates immediately
+            if counter % 20 == 0:
+                print(f"Progress: {counter}/{len(discovered_cards)} products scraped.")
+                save_snapshot(completed_products, previous_urls, is_final=False)
 
-    function renderStockBadge(count) {
-      const num = Number(count || 0);
-      return num > 0
-        ? `<span class="text-emerald-400 font-bold">${num}</span>`
-        : `<span class="text-rose-500 font-bold">0</span>`;
-    }
+    # Final completed flush
+    save_snapshot(completed_products, previous_urls, is_final=True)
+    print("Scraping finished successfully!")
 
-    function renderTable(items) {
-      const tbody = document.getElementById('tableBody');
-      if (!items.length) {
-        tbody.innerHTML = `<tr><td colspan="11" class="py-8 text-center text-slate-400">No matching products found.</td></tr>`;
-        return;
-      }
 
-      tbody.innerHTML = items.map(item => {
-        const curr = item.current_price ? `₹${item.current_price}` : '—';
-        const orig = item.original_price ? `<span class="line-through text-slate-400">₹${item.original_price}</span>` : '—';
-        const offBadge = item.off
-          ? `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded text-xs font-semibold">${item.off}</span>`
-          : '—';
-
-        // Clean out any lingering "Add to Cart -->"
-        const cleanTitle = (item.title || '')
-          .replace(/^(?:add to cart\s*(?:-->|->|-|:)?\s*)+/gi, '')
-          .replace(/-->/g, '')
-          .trim();
-
-        const newBadge = item.is_new
-          ? `<span class="ml-2 bg-blue-500/20 text-blue-400 border border-blue-500/30 px-1.5 py-0.5 rounded text-[10px] uppercase font-bold">NEW</span>`
-          : '';
-
-        const sizeCols = SIZES.map(s => {
-          const count = item.sizes ? item.sizes[s] : 0;
-          return `<td class="py-3.5 px-2 text-center">${renderStockBadge(count)}</td>`;
-        }).join('');
-
-        return `
-          <tr class="hover:bg-slate-800/50 transition">
-            <td class="py-3.5 px-4 font-semibold text-white">${cleanTitle}${newBadge}</td>
-            <td class="py-3.5 px-3 text-emerald-400 font-bold text-sm">${curr}</td>
-            <td class="py-3.5 px-3">${orig}</td>
-            <td class="py-3.5 px-3">${offBadge}</td>
-            ${sizeCols}
-            <td class="py-3.5 px-4 text-center">
-              <a href="${item.url}" target="_blank" rel="noopener noreferrer"
-                 class="inline-block bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded text-xs font-medium transition shadow">
-                View
-              </a>
-            </td>
-          </tr>
-        `;
-      }).join('');
-    }
-
-    function applyFilters() {
-      const term = document.getElementById('searchInput').value.toLowerCase();
-      const sort = document.getElementById('sortSelect').value;
-
-      let filtered = products.filter(p => {
-        const titleMatch = (p.title || '').toLowerCase().includes(term);
-        const sizeMatch = (activeSizeFilter === 'ALL') || (p.sizes && Number(p.sizes[activeSizeFilter]) > 0);
-        return titleMatch && sizeMatch;
-      });
-
-      if (sort === 'newest') {
-        filtered.sort((a, b) => (b.is_new === true ? 1 : 0) - (a.is_new === true ? 1 : 0));
-      } else if (sort === 'price-asc') {
-        filtered.sort((a, b) => (Number(a.current_price) || 0) - (Number(b.current_price) || 0));
-      } else if (sort === 'price-desc') {
-        filtered.sort((a, b) => (Number(b.current_price) || 0) - (Number(a.current_price) || 0));
-      } else if (sort === 'discount-desc') {
-        filtered.sort((a, b) => {
-          const discA = parseInt(a.off?.replace(/\D/g, '') || '0');
-          const discB = parseInt(b.off?.replace(/\D/g, '') || '0');
-          return discB - discA;
-        });
-      }
-
-      renderTable(filtered);
-    }
-
-    document.getElementById('searchInput').addEventListener('input', applyFilters);
-    document.getElementById('sortSelect').addEventListener('change', applyFilters);
-
-    loadData();
-  </script>
-</body>
-</html>
+if __name__ == "__main__":
+    os.makedirs("data", exist_ok=True)
+    run_parallel_crawler()
