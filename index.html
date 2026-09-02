@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sports Tracker Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-6">
+
+  <div class="max-w-6xl mx-auto space-y-6">
+    <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-800 pb-5">
+      <div>
+        <h1 class="text-2xl font-bold text-white tracking-tight">MFA Sports Product Monitor</h1>
+        <p class="text-sm text-slate-400">Live price tracking & discount monitoring</p>
+      </div>
+      <div id="statBox" class="text-sm bg-slate-800 px-4 py-2 rounded-lg border border-slate-700">
+        Loading items...
+      </div>
+    </header>
+
+    <div class="flex flex-col sm:flex-row gap-3">
+      <input
+        type="text"
+        id="searchInput"
+        placeholder="Search jerseys, clubs, editions..."
+        class="flex-1 px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+      />
+      <select
+        id="sortSelect"
+        class="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+      >
+        <option value="default">Sort By: Default</option>
+        <option value="price-asc">Price: Low to High</option>
+        <option value="price-desc">Price: High to Low</option>
+        <option value="discount-desc">Highest Discount</option>
+      </select>
+    </div>
+
+    <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden shadow-xl">
+      <div class="overflow-x-auto">
+        <table class="w-full text-left text-sm">
+          <thead class="bg-slate-800/80 uppercase text-xs text-slate-400 tracking-wider border-b border-slate-700">
+            <tr>
+              <th class="py-3 px-4">Product Name</th>
+              <th class="py-3 px-4">Current Price</th>
+              <th class="py-3 px-4">Original Price</th>
+              <th class="py-3 px-4">Discount</th>
+              <th class="py-3 px-4 text-center">Action</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody" class="divide-y divide-slate-700/60">
+            <tr>
+              <td colspan="5" class="py-8 text-center text-slate-400">Fetching latest products...</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let products = [];
+
+    async function loadData() {
+      try {
+        const response = await fetch('./data/products.json?t=' + Date.now());
+        if (!response.ok) throw new Error('Data file not found');
+        products = await response.json();
+        updateStats();
+        renderTable(products);
+      } catch (err) {
+        document.getElementById('tableBody').innerHTML = `
+          <tr>
+            <td colspan="5" class="py-8 text-center text-rose-400">
+              Failed to load product data. Check if <code>data/products.json</code> exists.
+            </td>
+          </tr>
+        `;
+      }
+    }
+
+    function updateStats() {
+      document.getElementById('statBox').innerHTML = `Tracking <strong>${products.length}</strong> items`;
+    }
+
+    function renderTable(items) {
+      const tbody = document.getElementById('tableBody');
+      if (items.length === 0) {
+        tbody.innerHTML = `
+          <tr>
+            <td colspan="5" class="py-8 text-center text-slate-400">No matching items found.</td>
+          </tr>
+        `;
+        return;
+      }
+
+      tbody.innerHTML = items.map(item => {
+        const curr = item.current_price ? `₹${item.current_price}` : '—';
+        const orig = item.original_price ? `<span class="line-through text-slate-500">₹${item.original_price}</span>` : '—';
+        const offBadge = item.off 
+          ? `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded text-xs font-semibold">${item.off}</span>`
+          : '—';
+
+        return `
+          <tr class="hover:bg-slate-700/40 transition">
+            <td class="py-3.5 px-4 font-medium text-white max-w-sm truncate">${item.title}</td>
+            <td class="py-3.5 px-4 text-emerald-400 font-bold">${curr}</td>
+            <td class="py-3.5 px-4">${orig}</td>
+            <td class="py-3.5 px-4">${offBadge}</td>
+            <td class="py-3.5 px-4 text-center">
+              <a href="${item.url}" target="_blank" rel="noopener noreferrer" 
+                 class="inline-block bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded text-xs font-medium transition">
+                View
+              </a>
+            </td>
+          </tr>
+        `;
+      }).join('');
+    }
+
+    // Search and Sort Event Listeners
+    function applyFilters() {
+      const term = document.getElementById('searchInput').value.toLowerCase();
+      const sort = document.getElementById('sortSelect').value;
+
+      let filtered = products.filter(p => p.title.toLowerCase().includes(term));
+
+      if (sort === 'price-asc') {
+        filtered.sort((a, b) => (Number(a.current_price) || 0) - (Number(b.current_price) || 0));
+      } else if (sort === 'price-desc') {
+        filtered.sort((a, b) => (Number(b.current_price) || 0) - (Number(a.current_price) || 0));
+      } else if (sort === 'discount-desc') {
+        filtered.sort((a, b) => {
+          const discA = parseInt(a.off) || 0;
+          const discB = parseInt(b.off) || 0;
+          return discB - discA;
+        });
+      }
+
+      renderTable(filtered);
+    }
+
+    document.getElementById('searchInput').addEventListener('input', applyFilters);
+    document.getElementById('sortSelect').addEventListener('change', applyFilters);
+
+    loadData();
+  </script>
+</body>
+</html>
