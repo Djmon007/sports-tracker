@@ -100,7 +100,7 @@
 
       tbody.innerHTML = items.map(item => {
         const curr = item.current_price ? `₹${item.current_price}` : '—';
-        const orig = item.original_price ? `<span class="text-slate-400 line-through">₹${item.original_price}</span>` : '—';
+        const orig = item.original_price ? `<span class="line-through text-slate-400">₹${item.original_price}</span>` : '—';
         const offBadge = item.off 
           ? `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded text-xs font-semibold">${item.off}</span>`
           : '—';
