@@ -6,19 +6,21 @@
   <title>Sports Tracker Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-slate-900 text-slate-100 min-h-screen p-6">
+<body class="bg-[#0f172a] text-slate-100 min-h-screen p-6">
 
   <div class="max-w-6xl mx-auto space-y-6">
+    <!-- Header -->
     <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-800 pb-5">
       <div>
         <h1 class="text-2xl font-bold text-white tracking-tight">MFA Sports Product Monitor</h1>
         <p class="text-sm text-slate-400">Live price tracking & discount monitoring</p>
       </div>
-      <div id="statBox" class="text-sm bg-slate-800 px-4 py-2 rounded-lg border border-slate-700">
+      <div id="statBox" class="text-sm bg-slate-800 px-4 py-2 rounded-lg border border-slate-700 font-medium">
         Loading items...
       </div>
     </header>
 
+    <!-- Filters & Sorting -->
     <div class="flex flex-col sm:flex-row gap-3">
       <input
         type="text"
@@ -37,19 +39,20 @@
       </select>
     </div>
 
-    <div class="bg-slate-800 border border-slate-700 rounded-xl overflow-hidden shadow-xl">
+    <!-- Table Container -->
+    <div class="bg-[#1e293b]/60 border border-slate-700 rounded-xl overflow-hidden shadow-2xl backdrop-blur">
       <div class="overflow-x-auto">
         <table class="w-full text-left text-sm">
-          <thead class="bg-slate-800/80 uppercase text-xs text-slate-400 tracking-wider border-b border-slate-700">
+          <thead class="bg-[#1e293b] uppercase text-xs text-slate-400 tracking-wider border-b border-slate-700">
             <tr>
-              <th class="py-3 px-4">Product Name</th>
-              <th class="py-3 px-4">Current Price</th>
-              <th class="py-3 px-4">Original Price</th>
-              <th class="py-3 px-4">Discount</th>
-              <th class="py-3 px-4 text-center">Action</th>
+              <th class="py-3.5 px-5">Product Name</th>
+              <th class="py-3.5 px-5">Current Price</th>
+              <th class="py-3.5 px-5">Original Price</th>
+              <th class="py-3.5 px-5">Discount</th>
+              <th class="py-3.5 px-5 text-center">Action</th>
             </tr>
           </thead>
-          <tbody id="tableBody" class="divide-y divide-slate-700/60">
+          <tbody id="tableBody" class="divide-y divide-slate-800">
             <tr>
               <td colspan="5" class="py-8 text-center text-slate-400">Fetching latest products...</td>
             </tr>
@@ -65,7 +68,7 @@
     async function loadData() {
       try {
         const response = await fetch('./data/products.json?t=' + Date.now());
-        if (!response.ok) throw new Error('Data file not found');
+        if (!response.ok) throw new Error('Could not fetch products.json');
         products = await response.json();
         updateStats();
         renderTable(products);
@@ -81,12 +84,12 @@
     }
 
     function updateStats() {
-      document.getElementById('statBox').innerHTML = `Tracking <strong>${products.length}</strong> items`;
+      document.getElementById('statBox').innerHTML = `Tracking <strong class="text-white">${products.length}</strong> items`;
     }
 
     function renderTable(items) {
       const tbody = document.getElementById('tableBody');
-      if (items.length === 0) {
+      if (!items.length) {
         tbody.innerHTML = `
           <tr>
             <td colspan="5" class="py-8 text-center text-slate-400">No matching items found.</td>
@@ -97,20 +100,20 @@
 
       tbody.innerHTML = items.map(item => {
         const curr = item.current_price ? `₹${item.current_price}` : '—';
-        const orig = item.original_price ? `<span class="line-through text-slate-500">₹${item.original_price}</span>` : '—';
+        const orig = item.original_price ? `<span class="text-slate-400 line-through">₹${item.original_price}</span>` : '—';
         const offBadge = item.off 
-          ? `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded text-xs font-semibold">${item.off}</span>`
+          ? `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded text-xs font-semibold">${item.off}</span>`
           : '—';
 
         return `
-          <tr class="hover:bg-slate-700/40 transition">
-            <td class="py-3.5 px-4 font-medium text-white max-w-sm truncate">${item.title}</td>
-            <td class="py-3.5 px-4 text-emerald-400 font-bold">${curr}</td>
-            <td class="py-3.5 px-4">${orig}</td>
-            <td class="py-3.5 px-4">${offBadge}</td>
-            <td class="py-3.5 px-4 text-center">
+          <tr class="hover:bg-slate-800/50 transition">
+            <td class="py-4 px-5 font-semibold text-white tracking-wide">${item.title}</td>
+            <td class="py-4 px-5 text-emerald-400 font-bold text-base">${curr}</td>
+            <td class="py-4 px-5">${orig}</td>
+            <td class="py-4 px-5">${offBadge}</td>
+            <td class="py-4 px-5 text-center">
               <a href="${item.url}" target="_blank" rel="noopener noreferrer" 
-                 class="inline-block bg-blue-600 hover:bg-blue-500 text-white px-3 py-1 rounded text-xs font-medium transition">
+                 class="inline-block bg-blue-600 hover:bg-blue-500 text-white px-4 py-1.5 rounded text-xs font-medium transition shadow">
                 View
               </a>
             </td>
@@ -119,7 +122,6 @@
       }).join('');
     }
 
-    // Search and Sort Event Listeners
     function applyFilters() {
       const term = document.getElementById('searchInput').value.toLowerCase();
       const sort = document.getElementById('sortSelect').value;
@@ -132,8 +134,8 @@
         filtered.sort((a, b) => (Number(b.current_price) || 0) - (Number(a.current_price) || 0));
       } else if (sort === 'discount-desc') {
         filtered.sort((a, b) => {
-          const discA = parseInt(a.off) || 0;
-          const discB = parseInt(b.off) || 0;
+          const discA = parseInt(a.off?.replace(/\D/g, '') || '0');
+          const discB = parseInt(b.off?.replace(/\D/g, '') || '0');
           return discB - discA;
         });
       }
