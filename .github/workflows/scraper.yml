@@ -2,9 +2,9 @@ name: Sports Tracker Monitor
 
 on:
   schedule:
-    # Runs daily at 06:00 UTC (11:30 AM IST)
-    - cron: '0 6 * * *'
-  workflow_dispatch: # Allows manual trigger from GitHub Actions tab
+    # Runs every hour, 24/7
+    - cron: '0 * * * *'
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -39,6 +39,6 @@ jobs:
           if git diff --staged --quiet; then
             echo "No price or catalog changes detected."
           else
-            git commit -m "Auto-update: sports-tracker product snapshot [skip ci]"
+            git commit -m "Hourly sync: MFA Sports catalog snapshot [skip ci]"
             git push
           fi
