@@ -23,13 +23,12 @@ def clean_text(text: str) -> str:
 
 
 def parse_card(view_link_elem):
-    # Determine the product URL
     href = view_link_elem.get("href", "")
     if not href or href.startswith("#") or "javascript:" in href:
         return None
     product_url = urljoin(BASE_URL, href)
 
-    # Ascend up to the enclosing product container (stops before full body/main container)
+    # Climb up to the card wrapper
     container = view_link_elem
     for _ in range(4):
         if container.parent and container.parent.name not in ["body", "html", "section"]:
@@ -37,10 +36,7 @@ def parse_card(view_link_elem):
         else:
             break
 
-    # Extract all text segments cleanly
     raw_strings = [clean_text(s) for s in container.stripped_strings if clean_text(s)]
-    
-    # Remove UI boilerplate strings
     filtered_strings = [
         s for s in raw_strings 
         if not re.search(r"^(view product|add to cart|buy now|wishlist)$", s, re.I)
@@ -49,8 +45,7 @@ def parse_card(view_link_elem):
     if not filtered_strings:
         return None
 
-    # 1. Title: The longest text line containing alphabet characters
-    # (Product titles like 'CHELSEA HOME 2026-27 IMPORTED KIT' are the primary descriptive line)
+    # 1. Product Title (the main alphanumeric text line)
     title = ""
     candidate_titles = [
         s for s in filtered_strings 
@@ -59,43 +54,61 @@ def parse_card(view_link_elem):
     if candidate_titles:
         title = max(candidate_titles, key=len)
 
-    # 2. Discount: Extract pattern like "(31% Off)" or "31% Off"
-    discount_off = None
-    for s in filtered_strings:
-        m = re.search(r"\(?\s*(\d+%\s*Off)\s*\)?", s, re.I)
-        if m:
-            discount_off = f"({m.group(1).strip()})"
-            break
-
-    # 3. Original Price: Check for <del>, <s>, <strike> tags
-    original_price = None
-    del_tag = container.find(["del", "s", "strike"])
-    if del_tag:
-        m = re.search(r"(\d+)", del_tag.get_text())
-        if m:
-            original_price = m.group(1)
-
-    # 4. Extract numeric prices
-    # Gather any standalone numbers between 2 and 5 digits (ignoring season years 2024-2027)
-    numbers = []
-    for s in filtered_strings:
-        found_nums = re.findall(r"\b(\d{2,5})\b", s)
-        for num in found_nums:
-            if num not in ["2024", "2025", "2026", "2027"] and not re.search(r"\b" + num + r"%\b", s):
-                numbers.append(num)
-
-    current_price = None
-    if numbers:
-        current_price = numbers[0]
-        # If original_price was not found via <del>, look for a second number
-        if not original_price and len(numbers) > 1:
-            original_price = numbers[1]
-            # Ensure current_price is the lower one if both exist
-            if int(current_price) > int(original_price):
-                current_price, original_price = original_price, current_price
-
     if not title:
         return None
+
+    # 2. Extract Discount (e.g., "(31% Off)")
+    full_card_text = clean_text(container.get_text(separator=" "))
+    off_match = re.search(r"\(?\s*(\d+%\s*Off)\s*\)?", full_card_text, re.I)
+    discount_off = f"({off_match.group(1).strip()})" if off_match else None
+
+    # 3. Price Block Extraction
+    # Remove the title from the card text so year numbers (2026-27, 2021-22) aren't read as prices
+    price_area = full_card_text.replace(title, "")
+    # Remove UI labels
+    price_area = re.sub(r"(?i)\bview product\b", "", price_area)
+
+    current_price = None
+    original_price = None
+
+    # Primary Pattern: Match two prices followed by (X% Off) -> e.g. "699 999 (31% Off)"
+    dual_price_match = re.search(
+        r"(?:₹|Rs\.?)?\s*(\d{2,5})\s+(?:₹|Rs\.?)?\s*(\d{2,5})\s*\(?\s*\d+%\s*Off\)?",
+        price_area,
+        re.I
+    )
+
+    if dual_price_match:
+        current_price = dual_price_match.group(1)
+        original_price = dual_price_match.group(2)
+    else:
+        # Check explicit strikethrough tags
+        del_tag = container.find(["del", "s", "strike"])
+        if del_tag:
+            m = re.search(r"(\d{2,5})", del_tag.get_text())
+            if m:
+                original_price = m.group(1)
+
+        # Collect isolated price candidates from the price area
+        remaining_numbers = re.findall(r"(?:₹|Rs\.?)?\s*(\d{2,5})\b", price_area)
+        # Exclude discount percentages and any common calendar year artifacts
+        valid_nums = [
+            n for n in remaining_numbers 
+            if n not in ["2021", "2022", "2024", "2025", "2026", "2027"]
+            and not re.search(r"\b" + n + r"%", price_area)
+        ]
+
+        if valid_nums:
+            current_price = valid_nums[0]
+            if len(valid_nums) > 1 and not original_price:
+                original_price = valid_nums[1]
+
+    # Ensure current price is the lower one if both exist
+    if current_price and original_price:
+        c_val = int(current_price)
+        o_val = int(original_price)
+        if c_val > o_val:
+            current_price, original_price = str(o_val), str(c_val)
 
     return {
         "title": title,
@@ -122,14 +135,12 @@ def scrape_products(max_pages: int = 5):
 
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # Directly locate every anchor that represents a product view action
         view_links = [
             a for a in soup.find_all("a") 
             if "view product" in a.get_text().lower() and a.get("href")
         ]
 
         if not view_links:
-            # Fallback if text differs slightly
             view_links = soup.find_all("a", href=re.compile(r"/Products?/[a-zA-Z0-9_-]+", re.I))
 
         page_count = 0
@@ -142,9 +153,7 @@ def scrape_products(max_pages: int = 5):
         print(f"Parsed {page_count} items from page {page}")
         time.sleep(1.2)
 
-    # Deduplicate items by URL
-    unique_items = list({item["url"]: item for item in items if item.get("url")}.values())
-    return unique_items
+    return list({item["url"]: item for item in items if item.get("url")}.values())
 
 
 if __name__ == "__main__":
