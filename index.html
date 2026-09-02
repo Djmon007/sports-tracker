@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sports Tracker - Live Monitor</title>
+  <title>Sports Tracker Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-[#0f172a] text-slate-100 min-h-screen p-6">
@@ -12,23 +12,19 @@
     <!-- Header -->
     <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-slate-800 pb-5">
       <div>
-        <div class="flex items-center gap-2">
-          <h1 class="text-2xl font-bold text-white tracking-tight">MFA Sports Live Tracker</h1>
-          <span id="liveBadge" class="flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-            <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
-            Live Proxy
-          </span>
-        </div>
-        <p class="text-sm text-slate-400">Direct on-demand inventory extraction & stock finder</p>
+        <h1 class="text-2xl font-bold text-white tracking-tight">MFA Sports Product Monitor</h1>
+        <p class="text-sm text-slate-400">Live price tracking & size-level stock inventory</p>
       </div>
-      <div id="lastUpdated" class="text-xs text-slate-500 font-mono">Connecting...</div>
+      <div id="lastUpdated" class="text-xs text-slate-500 font-mono">
+        Last updated: —
+      </div>
     </header>
 
     <!-- Top KPI Cards -->
     <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <div class="bg-[#1e293b]/70 border border-slate-700/80 rounded-xl p-5 shadow-lg flex items-center justify-between">
         <div>
-          <p class="text-xs uppercase tracking-wider text-slate-400 font-medium">Loaded Products</p>
+          <p class="text-xs uppercase tracking-wider text-slate-400 font-medium">Number of products</p>
           <h2 id="totalCount" class="text-3xl font-extrabold text-white mt-1">—</h2>
         </div>
         <div class="p-3 bg-blue-500/10 text-blue-400 rounded-lg">
@@ -38,16 +34,16 @@
 
       <div class="bg-[#1e293b]/70 border border-slate-700/80 rounded-xl p-5 shadow-lg flex items-center justify-between">
         <div>
-          <p class="text-xs uppercase tracking-wider text-slate-400 font-medium">In-Stock Filter Status</p>
-          <h2 id="filterLabel" class="text-xl font-bold text-emerald-400 mt-1">Showing All Sizes</h2>
+          <p class="text-xs uppercase tracking-wider text-slate-400 font-medium">Newly added products in 1 hour</p>
+          <h2 id="newCount" class="text-3xl font-extrabold text-emerald-400 mt-1">—</h2>
         </div>
-        <button onclick="fetchLiveData()" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow transition">
-          Refresh Live
-        </button>
+        <div class="p-3 bg-emerald-500/10 text-emerald-400 rounded-lg">
+          <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+        </div>
       </div>
     </div>
 
-    <!-- Controls: Search, Sort, & Quick Size Buttons -->
+    <!-- Filter & Size Bar -->
     <div class="space-y-3">
       <div class="flex flex-col sm:flex-row gap-3">
         <input
@@ -61,13 +57,13 @@
           class="px-4 py-2 bg-slate-800 border border-slate-700 rounded-lg text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
         >
           <option value="default">Sort By: Default</option>
+          <option value="newest">Newly Added First</option>
           <option value="price-asc">Price: Low to High</option>
           <option value="price-desc">Price: High to Low</option>
           <option value="discount-desc">Highest Discount</option>
         </select>
       </div>
 
-      <!-- Quick Size Filters -->
       <div class="flex items-center gap-2 flex-wrap text-xs">
         <span class="text-slate-400 font-medium mr-1">Find In-Stock Size:</span>
         <button onclick="filterBySize('ALL')" class="size-btn px-3 py-1 rounded bg-blue-600 text-white font-semibold">ALL</button>
@@ -80,13 +76,13 @@
       </div>
     </div>
 
-    <!-- Table Container -->
+    <!-- Table -->
     <div class="bg-[#1e293b]/60 border border-slate-700 rounded-xl overflow-hidden shadow-2xl backdrop-blur">
       <div class="overflow-x-auto">
         <table class="w-full text-left text-sm">
           <thead class="bg-[#1e293b] uppercase text-xs text-slate-400 tracking-wider border-b border-slate-700">
             <tr>
-              <th class="py-3.5 px-4 min-w-[200px]">Product Name</th>
+              <th class="py-3.5 px-4 min-w-[220px]">Product Name</th>
               <th class="py-3.5 px-3">Price</th>
               <th class="py-3.5 px-3">Original</th>
               <th class="py-3.5 px-3">Discount</th>
@@ -101,7 +97,7 @@
           </thead>
           <tbody id="tableBody" class="divide-y divide-slate-800">
             <tr>
-              <td colspan="11" class="py-8 text-center text-slate-400">Connecting to live scraper...</td>
+              <td colspan="11" class="py-8 text-center text-slate-400">Loading catalog data...</td>
             </tr>
           </tbody>
         </table>
@@ -110,47 +106,33 @@
   </div>
 
   <script>
-    // PASTE YOUR CLOUDFLARE WORKER URL HERE:
-    const LIVE_PROXY_URL = "https://sports-live-scraper.dwashil007.workers.dev/";
-
     let products = [];
     let activeSizeFilter = 'ALL';
     const SIZES = ["S", "M", "L", "XL", "XXL", "3XL"];
 
-    async function fetchLiveData() {
-      const badge = document.getElementById('liveBadge');
-      badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400 animate-ping"></span> Fetching Live...`;
-
+    async function loadData() {
       try {
-        const targetUrl = LIVE_PROXY_URL.includes("<YOUR-SUBDOMAIN>")
-          ? './data/products.json?t=' + Date.now()
-          : LIVE_PROXY_URL;
-
-        const res = await fetch(targetUrl);
-        if (!res.ok) throw new Error("Status " + res.status);
+        const res = await fetch('./data/products.json?t=' + Date.now());
+        if (!res.ok) throw new Error("Could not load products.json");
         const data = await res.json();
 
         products = data.products || (Array.isArray(data) ? data : []);
-        document.getElementById('totalCount').innerText = products.length;
-        document.getElementById('lastUpdated').innerText = `Live synced: ${new Date().toLocaleTimeString()}`;
-
-        badge.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20";
-        badge.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span> Live Connected`;
+        document.getElementById('totalCount').innerText = data.metadata?.total_products ?? products.length;
+        document.getElementById('newCount').innerText = data.metadata?.new_products_last_hour ?? '0';
+        if (data.metadata?.last_updated) {
+          document.getElementById('lastUpdated').innerText = `Last updated: ${data.metadata.last_updated}`;
+        }
 
         applyFilters();
       } catch (err) {
-        badge.className = "flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20";
-        badge.innerHTML = `Offline / Error`;
         document.getElementById('tableBody').innerHTML = `
-          <tr><td colspan="11" class="py-8 text-center text-rose-400">Failed to pull live data: ${err.message}. Make sure LIVE_PROXY_URL is set in index.html.</td></tr>
+          <tr><td colspan="11" class="py-8 text-center text-rose-400">Failed to load data. Waiting for next hourly sync.</td></tr>
         `;
       }
     }
 
     function filterBySize(size) {
       activeSizeFilter = size;
-      document.getElementById('filterLabel').innerText = size === 'ALL' ? 'Showing All Sizes' : `Filtering: In Stock in ${size}`;
-
       document.querySelectorAll('.size-btn').forEach(btn => {
         if (btn.innerText === size) {
           btn.className = "size-btn px-3 py-1 rounded bg-blue-600 text-white font-semibold";
@@ -158,7 +140,6 @@
           btn.className = "size-btn px-3 py-1 rounded bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300";
         }
       });
-
       applyFilters();
     }
 
@@ -172,7 +153,7 @@
     function renderTable(items) {
       const tbody = document.getElementById('tableBody');
       if (!items.length) {
-        tbody.innerHTML = `<tr><td colspan="11" class="py-8 text-center text-slate-400">No matching products found for selected filters.</td></tr>`;
+        tbody.innerHTML = `<tr><td colspan="11" class="py-8 text-center text-slate-400">No matching products found.</td></tr>`;
         return;
       }
 
@@ -183,6 +164,16 @@
           ? `<span class="bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded text-xs font-semibold">${item.off}</span>`
           : '—';
 
+        // Clean out any lingering "Add to Cart -->"
+        const cleanTitle = (item.title || '')
+          .replace(/^(?:add to cart\s*(?:-->|->|-|:)?\s*)+/gi, '')
+          .replace(/-->/g, '')
+          .trim();
+
+        const newBadge = item.is_new
+          ? `<span class="ml-2 bg-blue-500/20 text-blue-400 border border-blue-500/30 px-1.5 py-0.5 rounded text-[10px] uppercase font-bold">NEW</span>`
+          : '';
+
         const sizeCols = SIZES.map(s => {
           const count = item.sizes ? item.sizes[s] : 0;
           return `<td class="py-3.5 px-2 text-center">${renderStockBadge(count)}</td>`;
@@ -190,7 +181,7 @@
 
         return `
           <tr class="hover:bg-slate-800/50 transition">
-            <td class="py-3.5 px-4 font-semibold text-white">${item.title}</td>
+            <td class="py-3.5 px-4 font-semibold text-white">${cleanTitle}${newBadge}</td>
             <td class="py-3.5 px-3 text-emerald-400 font-bold text-sm">${curr}</td>
             <td class="py-3.5 px-3">${orig}</td>
             <td class="py-3.5 px-3">${offBadge}</td>
@@ -211,12 +202,14 @@
       const sort = document.getElementById('sortSelect').value;
 
       let filtered = products.filter(p => {
-        const matchesTerm = p.title.toLowerCase().includes(term);
-        const matchesSize = (activeSizeFilter === 'ALL') || (p.sizes && Number(p.sizes[activeSizeFilter]) > 0);
-        return matchesTerm && matchesSize;
+        const titleMatch = (p.title || '').toLowerCase().includes(term);
+        const sizeMatch = (activeSizeFilter === 'ALL') || (p.sizes && Number(p.sizes[activeSizeFilter]) > 0);
+        return titleMatch && sizeMatch;
       });
 
-      if (sort === 'price-asc') {
+      if (sort === 'newest') {
+        filtered.sort((a, b) => (b.is_new === true ? 1 : 0) - (a.is_new === true ? 1 : 0));
+      } else if (sort === 'price-asc') {
         filtered.sort((a, b) => (Number(a.current_price) || 0) - (Number(b.current_price) || 0));
       } else if (sort === 'price-desc') {
         filtered.sort((a, b) => (Number(b.current_price) || 0) - (Number(a.current_price) || 0));
@@ -234,7 +227,7 @@
     document.getElementById('searchInput').addEventListener('input', applyFilters);
     document.getElementById('sortSelect').addEventListener('change', applyFilters);
 
-    fetchLiveData();
+    loadData();
   </script>
 </body>
 </html>
