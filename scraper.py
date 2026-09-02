@@ -13,6 +13,7 @@ HEADERS = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
 }
 
@@ -21,78 +22,79 @@ def clean_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip() if text else ""
 
 
-def parse_product_card(card):
-    # 1. Product Link
-    link_tag = card.find("a", href=re.compile(r"/Products?/|/Product-detail/", re.I))
-    if not link_tag and card.name == "a":
-        link_tag = card
-
-    if not link_tag or not link_tag.get("href"):
-        return None
-
-    href = link_tag.get("href", "")
-    if href.startswith("#") or "javascript:" in href:
+def parse_card(view_link_elem):
+    # Determine the product URL
+    href = view_link_elem.get("href", "")
+    if not href or href.startswith("#") or "javascript:" in href:
         return None
     product_url = urljoin(BASE_URL, href)
 
-    # 2. Extract Discount (e.g. "(31% Off)")
-    full_text = card.get_text(separator=" ")
-    off_match = re.search(r"\(\s*(\d+%\s*Off)\s*\)", full_text, re.I)
-    if not off_match:
-        off_match = re.search(r"(\d+%\s*Off)", full_text, re.I)
-    discount_off = f"({off_match.group(1)})" if off_match else None
+    # Ascend up to the enclosing product container (stops before full body/main container)
+    container = view_link_elem
+    for _ in range(4):
+        if container.parent and container.parent.name not in ["body", "html", "section"]:
+            container = container.parent
+        else:
+            break
 
-    # 3. Extract Original Price (strikethrough / del tag)
-    original_price = None
-    del_tag = card.find(["del", "s", "strike"]) or card.find(
-        attrs={"style": re.compile(r"text-decoration:\s*line-through", re.I)}
-    )
-    if del_tag:
-        match = re.search(r"(\d+)", del_tag.get_text())
-        if match:
-            original_price = match.group(1)
-
-    # 4. Extract Title
-    title = ""
-    # Check for dedicated header or anchor with the product name
-    title_elem = card.find(["h2", "h3", "h4", "h5", "h6"])
-    if not title_elem:
-        for a in card.find_all("a"):
-            txt = clean_text(a.get_text())
-            if txt and "view product" not in txt.lower():
-                title_elem = a
-                break
-
-    if title_elem:
-        title = clean_text(title_elem.get_text())
-    else:
-        # Fallback: extract card lines and take the line preceding prices
-        lines = [clean_text(line) for line in card.stripped_strings]
-        for line in lines:
-            if "view product" in line.lower():
-                continue
-            if re.search(r"[A-Za-z]{3,}", line) and not re.search(r"^\s*₹?\s*\d+\s*$", line):
-                title = line
-                break
-
-    # Clean UI artefacts from title
-    title = re.sub(r"(?i)\bview product\b", "", title).strip()
-
-    # 5. Extract Current Price (targeted to the price element with ₹)
-    current_price = None
+    # Extract all text segments cleanly
+    raw_strings = [clean_text(s) for s in container.stripped_strings if clean_text(s)]
     
-    # Priority: find price prefixed with ₹ or Rs
-    rupee_match = re.search(r"(?:₹|Rs\.?)\s*(\d{2,5})", full_text)
-    if rupee_match:
-        current_price = rupee_match.group(1)
-    else:
-        # Find numeric sequence directly before original_price or discount
-        price_block_match = re.search(r"(\d{2,5})\s+(?:\d{2,5}\s+)?\(\d+%\s*Off\)", full_text)
-        if price_block_match:
-            current_price = price_block_match.group(1)
+    # Remove UI boilerplate strings
+    filtered_strings = [
+        s for s in raw_strings 
+        if not re.search(r"^(view product|add to cart|buy now|wishlist)$", s, re.I)
+    ]
 
-    # Validation: Title and price must be valid
-    if not title or title.isdigit() or len(title) < 3:
+    if not filtered_strings:
+        return None
+
+    # 1. Title: The longest text line containing alphabet characters
+    # (Product titles like 'CHELSEA HOME 2026-27 IMPORTED KIT' are the primary descriptive line)
+    title = ""
+    candidate_titles = [
+        s for s in filtered_strings 
+        if re.search(r"[a-zA-Z]{3,}", s) and not re.search(r"^\(?\d+%\s*Off\)?$", s, re.I)
+    ]
+    if candidate_titles:
+        title = max(candidate_titles, key=len)
+
+    # 2. Discount: Extract pattern like "(31% Off)" or "31% Off"
+    discount_off = None
+    for s in filtered_strings:
+        m = re.search(r"\(?\s*(\d+%\s*Off)\s*\)?", s, re.I)
+        if m:
+            discount_off = f"({m.group(1).strip()})"
+            break
+
+    # 3. Original Price: Check for <del>, <s>, <strike> tags
+    original_price = None
+    del_tag = container.find(["del", "s", "strike"])
+    if del_tag:
+        m = re.search(r"(\d+)", del_tag.get_text())
+        if m:
+            original_price = m.group(1)
+
+    # 4. Extract numeric prices
+    # Gather any standalone numbers between 2 and 5 digits (ignoring season years 2024-2027)
+    numbers = []
+    for s in filtered_strings:
+        found_nums = re.findall(r"\b(\d{2,5})\b", s)
+        for num in found_nums:
+            if num not in ["2024", "2025", "2026", "2027"] and not re.search(r"\b" + num + r"%\b", s):
+                numbers.append(num)
+
+    current_price = None
+    if numbers:
+        current_price = numbers[0]
+        # If original_price was not found via <del>, look for a second number
+        if not original_price and len(numbers) > 1:
+            original_price = numbers[1]
+            # Ensure current_price is the lower one if both exist
+            if int(current_price) > int(original_price):
+                current_price, original_price = original_price, current_price
+
+    if not title:
         return None
 
     return {
@@ -100,7 +102,7 @@ def parse_product_card(card):
         "current_price": current_price,
         "original_price": original_price,
         "off": discount_off,
-        "url": product_url,
+        "url": product_url
     }
 
 
@@ -115,39 +117,42 @@ def scrape_products(max_pages: int = 5):
             res = requests.get(url, headers=HEADERS, timeout=20)
             res.raise_for_status()
         except requests.RequestException as exc:
-            print(f"Failed to fetch {url}: {exc}")
+            print(f"Request error for page {page}: {exc}")
             break
 
         soup = BeautifulSoup(res.text, "html.parser")
 
-        # Get parent product containers
-        cards = soup.find_all("div", class_=re.compile(r"product|col-|card|item", re.I))
-        candidate_cards = [
-            c for c in cards 
-            if "view product" in c.get_text().lower() 
-            and len(c.find_all(text=re.compile(r"view product", re.I))) == 1
+        # Directly locate every anchor that represents a product view action
+        view_links = [
+            a for a in soup.find_all("a") 
+            if "view product" in a.get_text().lower() and a.get("href")
         ]
 
-        found = 0
-        for card in candidate_cards:
-            parsed = parse_product_card(card)
-            if parsed:
-                items.append(parsed)
-                found += 1
+        if not view_links:
+            # Fallback if text differs slightly
+            view_links = soup.find_all("a", href=re.compile(r"/Products?/[a-zA-Z0-9_-]+", re.I))
 
-        print(f"Extracted {found} products from page {page}")
-        time.sleep(1.5)
+        page_count = 0
+        for link in view_links:
+            data = parse_card(link)
+            if data:
+                items.append(data)
+                page_count += 1
 
-    unique_items = {item["url"]: item for item in items if item.get("url")}.values()
-    return list(unique_items)
+        print(f"Parsed {page_count} items from page {page}")
+        time.sleep(1.2)
+
+    # Deduplicate items by URL
+    unique_items = list({item["url"]: item for item in items if item.get("url")}.values())
+    return unique_items
 
 
 if __name__ == "__main__":
     os.makedirs("data", exist_ok=True)
     results = scrape_products(max_pages=5)
 
-    output_file = "data/products.json"
-    with open(output_file, "w", encoding="utf-8") as f:
+    output_path = "data/products.json"
+    with open(output_path, "w", encoding="utf-8") as f:
         json.dump(results, f, indent=2, ensure_ascii=False)
 
-    print(f"Saved {len(results)} items to {output_file}")
+    print(f"Done! Successfully written {len(results)} items to {output_path}")
